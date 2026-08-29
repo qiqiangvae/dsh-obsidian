@@ -386,13 +386,17 @@ function renderLint(value: unknown): string {
 }
 
 function renderScaffold(value: unknown): string {
-  const v = value as { applied?: boolean; plan?: { create: string[]; write: { path: string }[]; skipped: string[] } };
-  if (!v || !v.plan) return 'wiki_scaffold: failed';
-  const p = v.plan;
-  if (v.applied) {
-    return `wiki_scaffold: created ${p.create.length} dirs, wrote ${p.write.length} files, skipped ${p.skipped.length} existing`;
+  // `scaffold()` returns the bare plan on dry-run and `{applied, plan}` after apply.
+  const v = value as
+    | { applied?: boolean; plan?: { create: string[]; write: { path: string }[]; skipped: string[] } }
+    | { create: string[]; write: { path: string }[]; skipped: string[] };
+  if (!v) return 'wiki_scaffold: failed';
+  const plan = 'plan' in v && v.plan ? v.plan : (v as { create: string[]; write: { path: string }[]; skipped: string[] });
+  if (!plan || !Array.isArray(plan.create)) return 'wiki_scaffold: failed';
+  if ('applied' in v && v.applied) {
+    return `wiki_scaffold: created ${plan.create.length} dirs, wrote ${plan.write.length} files, skipped ${plan.skipped.length} existing`;
   }
-  return `wiki_scaffold (dry-run): would create ${p.create.length} dirs and write ${p.write.length} files. Pass apply: true to actually write.`;
+  return `wiki_scaffold (dry-run): would create ${plan.create.length} dirs and write ${plan.write.length} files. Pass apply: true to actually write.`;
 }
 
 function renderList(value: unknown): string {
