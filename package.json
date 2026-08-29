@@ -1,5 +1,5 @@
 {
-  "name": "dsh-obsidian",
+  "name": "@qiqiangvae/dsh-obsidian",
   "version": "0.1.0",
   "description": "Self-organizing AI second brain for Obsidian, as a single DeepSeek Harness plugin. Merged fork of dsh-plugin-wiki-skills + dsh-plugin-wiki-tools, targeting parity with claude-obsidian.",
   "type": "module",
