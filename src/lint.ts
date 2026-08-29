@@ -78,8 +78,11 @@ export function lint(vaultPath: string, config: PluginConfig, opts: { fix?: bool
       }
     }
 
-    // empty sections
-    for (const m of body.matchAll(/\n## ([^\n]+)\n+(?=\n|## )/g)) {
+    // empty sections: a `## heading` line followed by a blank line or another
+    // heading. Use a single `\n` before the lookahead — `\n+` was greedy and
+    // consumed the newline that starts the next match, so every other empty
+    // heading was skipped.
+    for (const m of body.matchAll(/\n## ([^\n]+)\n(?=\n|## |$)/g)) {
       issues.push({ severity: 'info', category: 'empty-section', file: p, message: `section "${m[1]}" is empty`, suggestion: 'add content or remove the heading' });
     }
   }

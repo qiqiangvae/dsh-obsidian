@@ -19,6 +19,7 @@ import {
   walkMd,
   writePage,
   renamePage,
+  appendLog,
   assertInsideVault,
   resolveLayout,
 } from '../lib/vault.js';
@@ -71,6 +72,15 @@ test('isMachineryPage is case-insensitive and word-bounded', () => {
   assert.equal(isMachineryPage('LINT REPORT'), true);
   assert.equal(isMachineryPage('Lint Reporter Profile'), false);
   assert.equal(isMachineryPage('Resource'), false);
+});
+
+test('isMachineryPage treats index/hot/log as machinery', () => {
+  assert.equal(isMachineryPage('index'), true);
+  assert.equal(isMachineryPage('hot'), true);
+  assert.equal(isMachineryPage('log'), true);
+  assert.equal(isMachineryPage('Index'), true, 'case-insensitive');
+  assert.equal(isMachineryPage('index.md'), false, 'basename only, no extension');
+  assert.equal(isMachineryPage('indexed'), false);
 });
 
 test('isPortableFilename rejects Windows reserved + bad chars', () => {
@@ -150,6 +160,37 @@ test('renamePage refuses machinery renames', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('appendLog groups entries under a dated section, newest first', () => {
+  const { root, cfg } = freshVault();
+  const layout = resolveLayout(root, cfg);
+  appendLog(layout.logFile, 'resource [[One]]');
+  appendLog(layout.logFile, 'resource [[Two]]');
+  const log = readFileSync(layout.logFile, 'utf8');
+  // Entries sit BELOW the `## YYYY-MM-DD` header; the later append ("Two")
+  // is newest-first at the top. Header appears exactly once.
+  assert.match(log, /# Log\n\n## \d{4}-\d{2}-\d{2}\n/);
+  assert.equal((log.match(/^## \d{4}-\d{2}-\d{2}$/gm) ?? []).length, 1, 'one dated section');
+  const twoIdx = log.indexOf('[[Two]]');
+  const oneIdx = log.indexOf('[[One]]');
+  assert.ok(twoIdx >= 0 && oneIdx >= 0, 'both entries present');
+  assert.ok(twoIdx < oneIdx, 'later append is newest-first at top');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('lint catches every empty H2 section, not every other one', () => {
+  const { root, cfg } = freshVault();
+  const layout = resolveLayout(root, cfg);
+  writeFileSync(
+    join(root, 'wiki', 'Sections.md'),
+    '# S\n\n## Alpha\n\n## Beta\n\n## Gamma\n\n## Delta\n',
+  );
+  const report = lint(root, cfg);
+  const empty = report.issues.filter(i => i.category === 'empty-section');
+  const titles = empty.map(i => i.message.match(/section "(.+)" is empty/)?.[1]).filter(Boolean);
+  assert.deepEqual(titles.sort(), ['Alpha', 'Beta', 'Delta', 'Gamma']);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('renamePage moves a page within its type folder', () => {
   const { root, cfg } = freshVault();
   writePage(root, cfg, { title: 'Old Name', type: 'resource', content: 'x' });
@@ -226,5 +267,9 @@ test('listAllTitles + walkMd skip machinery pages', () => {
   const titles = listAllTitles(join(root, 'wiki'));
   assert.ok(titles.has('Real One'));
   assert.ok(!titles.has('Lint Report Today'));
+  // index/hot/log are also machinery — not listed
+  assert.ok(!titles.has('index'), 'index is machinery');
+  assert.ok(!titles.has('hot'), 'hot is machinery');
+  assert.ok(!titles.has('log'), 'log is machinery');
   rmSync(root, { recursive: true, force: true });
 });

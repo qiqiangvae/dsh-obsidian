@@ -70,8 +70,10 @@ const PORTABLE_BAD_CHARS = /[:<>"|?*\\]/;
 const PORTABLE_BAD_TAIL = /[ .]+$/;
 
 export function isMachineryPage(name: string): boolean {
-  // case-insensitive: "Lint Report", "lint report", "LINT REPORT" all count
-  return /^lint report\b/i.test(name);
+  // case-insensitive: "Lint Report", "lint report", "LINT REPORT" all count.
+  // index/hot/log are the master index, hot cache, and change log — machine
+  // files managed by the plugin, never content pages.
+  return /^lint report\b/i.test(name) || /^(index|hot|log)$/i.test(name);
 }
 
 export function isPortableFilename(name: string): boolean {
@@ -190,11 +192,25 @@ export function appendLog(logFile: string, line: string): void {
     mkdirSync(dirname(logFile), { recursive: true });
   }
   const today = new Date().toISOString().slice(0, 10);
-  let md = existsSync(logFile) ? readFileSync(logFile, 'utf8') : `# Log\n\n`;
-  if (!md.startsWith(`## ${today}`)) {
-    md = `## ${today}\n\n` + md.replace(/^# Log\n\n/, '');
+  const entry = `- ${new Date().toISOString()} — ${line}`;
+  let md = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+
+  // Normalize: file must start with the `# Log` heading once.
+  if (!/^# Log\s*\n/i.test(md)) {
+    md = `# Log\n\n${md.replace(/^\n+/, '')}`;
   }
-  md = `- ${new Date().toISOString()} — ${line}\n` + md;
+
+  // Ensure a section for today exists, placed right after the heading
+  // (newest section first). Sections are `## YYYY-MM-DD`, entries newest-first.
+  const sectionRe = new RegExp(`^## ${today}\\n`, 'm');
+  if (!sectionRe.test(md)) {
+    md = md.replace(/(^# Log[^\n]*\n+)/, `$1## ${today}\n`);
+  }
+
+  // Insert the new entry at the top of today's section.
+  // Since the section header is present, this always works — the header
+  // line is replaced with itself followed by the entry line.
+  md = md.replace(new RegExp(`(^## ${today}\\n)`, 'm'), `$1${entry}\n`);
   writeFileSync(logFile, md);
 }
 
@@ -296,7 +312,7 @@ export function writePage(
     : { fm: {}, body: '' };
 
   if (existing.fm.source_hash && sourceHash && existing.fm.source_hash === sourceHash && !args.force) {
-    return { path: targetPath, unresolvedLinks: [], sourceHash, skipped: true };
+    return { path: targetPath, unresolvedLinks: [], skipped: true, ...(sourceHash ? { sourceHash } : {}) };
   }
 
   const fm = completeFrontmatter(existing.fm, {
@@ -323,7 +339,7 @@ export function writePage(
   titles.add(args.title);
   const unresolvedLinks = collectUnresolvedLinks(args.content, titles);
 
-  return { path: targetPath, unresolvedLinks, sourceHash };
+  return { path: targetPath, unresolvedLinks, ...(sourceHash ? { sourceHash } : {}) };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
