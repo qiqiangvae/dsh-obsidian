@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build metadata (we ship the compiled `lib/`, just not its sourcemaps)
+*.tsbuildinfo
+
+# runtime
+.vault-meta/
+*.log
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# test
+coverage/
+.nyc_output/
