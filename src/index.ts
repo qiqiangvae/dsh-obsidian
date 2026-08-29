@@ -205,6 +205,7 @@ export async function apply(ctx: Context, config: ObsidianConfig): Promise<void>
     execute: async (args: any) => {
       return renamePage(
         config.vaultPath,
+        pluginConfig,
         args.old_title as string,
         args.new_title as string,
       );

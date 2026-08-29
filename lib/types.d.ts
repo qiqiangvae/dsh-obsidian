@@ -31,8 +31,13 @@ export interface ToolsService {
 export interface SkillManifest {
     name: string;
     description: string;
-    path: string;
-    resourceBase?: string;
+    source: string;
+    content: string;
+    path?: string;
+    resourceBase?: {
+        kind: 'directory';
+        path: string;
+    };
 }
 export interface SkillsService {
     register(manifest: SkillManifest): void;

@@ -146,7 +146,18 @@ test('writePage refuses to write machinery pages', () => {
 test('renamePage refuses machinery renames', () => {
   const { root, cfg } = freshVault();
   writePage(root, cfg, { title: 'Real Page', type: 'resource', content: 'x' });
-  assert.throws(() => renamePage(root, 'Real Page', 'Lint Report X'), /machinery page/);
+  assert.throws(() => renamePage(root, cfg, 'Real Page', 'Lint Report X'), /machinery page/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('renamePage moves a page within its type folder', () => {
+  const { root, cfg } = freshVault();
+  writePage(root, cfg, { title: 'Old Name', type: 'resource', content: 'x' });
+  const res = renamePage(root, cfg, 'Old Name', 'New Name');
+  assert.match(res.from, /Old Name\.md$/);
+  assert.match(res.to, /wiki[\\/]resources[\\/]New Name\.md$/);
+  assert.ok(existsSync(res.to));
+  assert.ok(!existsSync(res.from));
   rmSync(root, { recursive: true, force: true });
 });
 

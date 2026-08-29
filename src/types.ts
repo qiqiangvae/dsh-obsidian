@@ -40,11 +40,21 @@ export interface ToolsService {
 }
 
 // Skills service — registers Agent Skills SKILL.md manifests.
+//
+// NOTE: the `@deepseek-ai/dsh-skill` service validates a runtime skill
+// strictly when it later loads it (`validateDefinition`): it requires
+//   - `source`  (a non-empty string, e.g. the provider/bundle id)
+//   - `content` (a non-empty string — the SKILL.md body WITHOUT frontmatter)
+//   - `resourceBase` (an object `{ kind, ... }`, NOT a bare path string)
+// Missing `source` or `content` throws: "skill provider ... returned skill
+// ... with a non-string source".
 export interface SkillManifest {
   name: string;
   description: string;
-  path: string;
-  resourceBase?: string;
+  source: string;
+  content: string;
+  path?: string;
+  resourceBase?: { kind: 'directory'; path: string };
 }
 
 export interface SkillsService {

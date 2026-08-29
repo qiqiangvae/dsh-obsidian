@@ -44,7 +44,6 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/dsh-skills": "*",
     "@deepseek-ai/schemastery": "*"
   },
   "scripts": {

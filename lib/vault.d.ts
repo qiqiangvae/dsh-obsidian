@@ -55,15 +55,15 @@ export interface WritePageResult {
     skipped?: boolean;
 }
 export declare function safeFilename(title: string): string;
-export declare function routePageFolder(layout: VaultLayout, type: string): string;
+export declare function routePageFolder(vaultPath: string, layout: VaultLayout, type: string): string;
 export declare function collectUnresolvedLinks(body: string, knownTitles: Set<string>): string[];
 export declare function listAllTitles(wikiDir: string): Set<string>;
 export declare function sha256(s: string | Buffer): string;
 export declare function writePage(vaultPath: string, config: PluginConfig, args: WritePageArgs): WritePageResult;
-export declare function renamePage(vaultPath: string, oldTitle: string, newTitle: string): {
+export declare function renamePage(vaultPath: string, config: PluginConfig, oldTitle: string, newTitle: string): {
     from: string;
     to: string;
 };
-export declare function deletePage(vaultPath: string, title: string): void;
+export declare function deletePage(vaultPath: string, config: PluginConfig, title: string): void;
 export declare function walkMd(root: string): Generator<string>;
 //# sourceMappingURL=vault.d.ts.map

@@ -222,9 +222,12 @@ export function safeFilename(title: string): string {
   return title.replace(/[\\/]/g, '-').replace(/[<>:"?*|]/g, '').trim() || 'untitled';
 }
 
-export function routePageFolder(layout: VaultLayout, type: string): string {
+// typeFolders values are RELATIVE TO vaultPath (they already include the
+// leading `wiki/` segment), e.g. `resource` → `wiki/resources`. Route against
+// vaultPath directly — never against wikiDir, which would double the `wiki/`.
+export function routePageFolder(vaultPath: string, layout: VaultLayout, type: string): string {
   const folder = layout.typeFolders[type] ?? layout.typeFolders['resource']!;
-  return join(layout.wikiDir, folder);
+  return join(vaultPath, folder);
 }
 
 export function collectUnresolvedLinks(body: string, knownTitles: Set<string>): string[] {
@@ -267,7 +270,7 @@ export function writePage(
   if (!isPortableFilename(filename)) {
     throw new Error(`non-portable filename: ${filename}`);
   }
-  const folder = routePageFolder(layout, args.type);
+  const folder = routePageFolder(vaultPath, layout, args.type);
   assertInsideVault(vaultPath, folder);
   if (!existsSync(folder)) mkdirSync(folder, { recursive: true });
 
@@ -327,26 +330,43 @@ export function writePage(
 // Page rename with machinery protection
 // ──────────────────────────────────────────────────────────────────────────────
 
-export function renamePage(vaultPath: string, oldTitle: string, newTitle: string): { from: string; to: string } {
+export function renamePage(
+  vaultPath: string,
+  config: PluginConfig,
+  oldTitle: string,
+  newTitle: string,
+): { from: string; to: string } {
+  const layout = resolveLayout(vaultPath, config);
   const oldName = safeFilename(oldTitle);
   const newName = safeFilename(newTitle);
   if (isMachineryPage(oldName) || isMachineryPage(newName)) {
     throw new Error('refusing to rename machinery page');
   }
-  const from = join(vaultPath, 'wiki', 'resources', `${oldName}.md`);
-  const to = join(vaultPath, 'wiki', 'resources', `${newName}.md`);
-  if (!existsSync(from)) throw new Error(`not found: ${from}`);
+  if (!isPortableFilename(newName)) {
+    throw new Error(`non-portable filename: ${newName}`);
+  }
+  // Locate the existing page across every effective type folder.
+  let from: string | undefined;
+  for (const type of Object.keys(layout.typeFolders)) {
+    const dir = routePageFolder(vaultPath, layout, type);
+    const candidate = join(dir, `${oldName}.md`);
+    if (existsSync(candidate)) { from = candidate; break; }
+  }
+  if (!from) throw new Error(`not found: ${oldTitle}`);
+  const toDir = dirname(from);
+  const to = join(toDir, `${newName}.md`);
   if (existsSync(to)) throw new Error(`target exists: ${to}`);
   renameSync(from, to);
   return { from, to };
 }
 
-export function deletePage(vaultPath: string, title: string): void {
+export function deletePage(vaultPath: string, config: PluginConfig, title: string): void {
+  const layout = resolveLayout(vaultPath, config);
   const name = safeFilename(title);
   if (isMachineryPage(name)) throw new Error('refusing to delete machinery page');
-  // search in all typeFolders
-  for (const folder of Object.values(DEFAULT_TYPE_FOLDERS)) {
-    const p = join(vaultPath, folder, `${name}.md`);
+  // search in all effective typeFolders
+  for (const type of Object.keys(layout.typeFolders)) {
+    const p = join(routePageFolder(vaultPath, layout, type), `${name}.md`);
     if (existsSync(p)) { unlinkSync(p); return; }
   }
   throw new Error(`not found: ${title}`);
