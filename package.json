@@ -3,21 +3,28 @@
   "version": "0.1.0",
   "description": "Self-organizing AI second brain for Obsidian, as a single DeepSeek Harness plugin. Merged fork of dsh-plugin-wiki-skills + dsh-plugin-wiki-tools, targeting parity with claude-obsidian.",
   "type": "module",
-  "main": "lib/index.js",
-  "types": "lib/index.d.ts",
-  "license": "MIT",
-  "engines": {
-    "node": ">=20.0.0"
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": "./index.js",
+    "./lib/vault.js": "./lib/vault.js",
+    "./lib/search.js": "./lib/search.js",
+    "./lib/lint.js": "./lib/lint.js",
+    "./lib/scaffold.js": "./lib/scaffold.js",
+    "./lib/skills.js": "./lib/skills.js",
+    "./lib/types.js": "./lib/types.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
   },
-  "scripts": {
-    "test": "node --test test/",
-    "build": "tsc -p tsconfig.json",
-    "prepublishOnly": "npm run build"
-  },
-  "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
-  },
+  "files": [
+    "index.js",
+    "lib/",
+    "cordis.patch.yml",
+    "skills/",
+    "README.md",
+    "LICENSE",
+    "ATTRIBUTION.md"
+  ],
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
@@ -26,8 +33,34 @@
     "second-brain",
     "llm-wiki"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qiqiangvae/dsh-obsidian.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "scripts": {
+    "test": "node --test test/basic.test.mjs",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "dsh": {
-    "kind": "plugin",
-    "provides": ["tools", "skills"]
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

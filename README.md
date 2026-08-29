@@ -23,23 +23,28 @@ So: one plugin, versioned together, with a clear upgrade path to v2.x features
 
 Prerequisites:
 
-- DSH 0.x or newer (with `dsh plugin` CLI)
+- DSH 0.x or newer (with `dsh plugin` CLI), Node ≥ 22.19
 - An Obsidian vault somewhere on disk
 
 ```bash
-# Add the plugin
+# 1. Add the plugin
 dsh plugin --profile web add github:qiqiangvae/dsh-obsidian
 
-# Set your vault path (edit your profile's cordis.patch.yml)
+# 2. Set your vault path in your profile's cordis.patch.yml
+#    (~/.dsh/profiles/web/cordis.patch.yml)
+#
 #   - id: dsh-obsidian
 #     config:
 #       vaultPath: /absolute/path/to/your/obsidian/vault
+#       # optional:
+#       # typeFolders: { domain: "wiki/areas" }
+#       # maxQueryResults: 10
+#
+# 3. Restart DSH
+dsh web
 
-# Optional: scaffold a fresh vault
-# In DSH, run: wiki_scaffold { template: "default", apply: true }
-
-# Optional: lint
-# In DSH, run: wiki_lint
+# 4. (optional) Scaffold a fresh vault
+#    In DSH: run the wiki_scaffold tool with { template: "default", apply: true }
 ```
 
 To install from a local checkout (e.g. while developing this plugin):
@@ -47,7 +52,7 @@ To install from a local checkout (e.g. while developing this plugin):
 ```bash
 git clone git@github.com:qiqiangvae/dsh-obsidian.git
 cd dsh-obsidian
-pnpm install      # or npm install — for the dev dependencies
+pnpm install      # for dev dependencies (typescript, @types)
 pnpm run build    # compiles src/ → lib/
 dsh plugin --profile web add link:$(pwd)
 ```
