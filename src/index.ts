@@ -1,195 +1,292 @@
 /**
  * index.ts — DSH plugin entry point for dsh-obsidian.
  *
- * Registers the four mechanical tools (`wiki_query`, `wiki_write`,
- * `wiki_lint`, `wiki_scaffold`) and the bundled skill set discovered under
- * `skills/`. All file I/O is funneled through the helpers in vault.ts so
- * path safety, frontmatter rules, and index/log bookkeeping stay consistent.
+ * Re-implementation of dsh-plugin-wiki-tools + dsh-plugin-wiki-skills, using
+ * the modern `apply(ctx, config)` signature and the `defineTool()` helper
+ * from @deepseek-ai/dsh-tools. Each tool returns structured data; the render
+ * function shapes the model-facing text.
  *
  * Required config (in your profile's cordis.patch.yml):
  *
  *   - id: dsh-obsidian
  *     config:
  *       vaultPath: /absolute/path/to/your/obsidian/vault
- *       # optional:
- *       typeFolders: { domain: "wiki/areas" }
- *       maxQueryResults: 10
+ *
+ * The boot fails loud if vaultPath is missing.
  */
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 
-import type { Context, PluginModule } from './types.js';
+import { defineTool } from '@deepseek-ai/dsh-tools';
+import z from '@deepseek-ai/schemastery';
+
 import { resolveLayout } from './vault.js';
 import { search } from './search.js';
-import { writePage, renamePage, deletePage, listAllTitles } from './vault.js';
+import { writePage, renamePage, listAllTitles } from './vault.js';
 import { lint, writeLintReport } from './lint.js';
 import { scaffold } from './scaffold.js';
 import { registerAllSkills } from './skills.js';
+import type { PluginConfig, Context, ToolDefinition } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function requireVaultPath(ctx: Context): string {
-  const p = ctx.config.vaultPath;
-  if (!p) {
-    throw new Error(
-      'dsh-obsidian: vaultPath is required. ' +
-      'Set it in your profile cordis.patch.yml under the dsh-obsidian row, e.g.\n' +
-      '  - id: dsh-obsidian\n' +
-      '    config:\n' +
-      '      vaultPath: /absolute/path/to/vault',
-    );
-  }
-  if (!existsSync(p)) {
-    ctx.logger.warn(`dsh-obsidian: vaultPath does not exist: ${p} (create it or fix the path)`);
-  }
-  return p;
+// ──────────────────────────────────────────────────────────────────────────────
+// Config schema (validated by Schemastery at load time)
+// ──────────────────────────────────────────────────────────────────────────────
+
+export const Config = z.object({
+  /** Absolute path to the Obsidian vault root. */
+  vaultPath: z.string().required(),
+  /** Max wiki_query hits in standard mode. */
+  maxQueryResults: z.number().default(10),
+  /** Optional per-type folder overrides. */
+  typeFolders: z.object({}),
+});
+
+/** Hand-written mirror of the schema above; dsh passes this exact shape to apply. */
+export interface ObsidianConfig {
+  vaultPath: string;
+  maxQueryResults: number;
+  typeFolders: Record<string, string>;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Plugin identity
+// ──────────────────────────────────────────────────────────────────────────────
+
 export const name = 'dsh-obsidian';
+// Inject: `tools` (the dsh-tools service that owns our wiki_query etc.) and
+// `skills` (the dsh-skills service that bundles the SKILL.md catalog).
+// The loader waits for these to be available before calling apply().
 export const inject = ['tools', 'skills'];
 
-export function apply(ctx: Context): void {
+// ──────────────────────────────────────────────────────────────────────────────
+// register helper — our local ToolDefinition is intentionally loose (the
+// dsh-tools types require `execute` to return a strictly-typed `JsonValue`).
+// At runtime, our plain objects are JSON-serializable; the cast is safe.
+// We pass through defineTool() so dsh-tools still validates the args schema
+// and the output schema on every call.
+// ──────────────────────────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const reg = (ctx: Context, def: any) => ctx.tools.register(defineTool(def));
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Apply — runs once at boot, after deps are ready
+// ──────────────────────────────────────────────────────────────────────────────
+
+export async function apply(ctx: Context, config: ObsidianConfig): Promise<void> {
   ctx.logger.info('dsh-obsidian activating…');
 
-  const vaultPath = requireVaultPath(ctx);
-  const config = ctx.config;
-  const layout = resolveLayout(vaultPath, config);
+  if (typeof config.vaultPath !== 'string' || config.vaultPath.length === 0) {
+    throw new Error(
+      'dsh-obsidian: config vaultPath is required. Set it on the dsh-obsidian row ' +
+        'in your profile cordis.patch.yml, e.g.\n' +
+        '  - id: dsh-obsidian\n' +
+        '    config:\n' +
+        '      vaultPath: /absolute/path/to/your/obsidian/vault',
+    );
+  }
+  if (!existsSync(config.vaultPath)) {
+    ctx.logger.warn(
+      `dsh-obsidian: vaultPath does not exist: ${config.vaultPath} ` +
+        `(create it or run wiki_scaffold to initialize)`,
+    );
+  }
+
+  // Materialize a PluginConfig for the helpers
+  const pluginConfig: PluginConfig = {
+    vaultPath: config.vaultPath,
+    typeFolders: (config.typeFolders ?? {}) as Record<string, string>,
+    maxQueryResults: config.maxQueryResults ?? 10,
+  };
+  const layout = resolveLayout(config.vaultPath, pluginConfig);
 
   // ── tools ────────────────────────────────────────────────────────────────
 
-  ctx.tools.register({
+  // wiki_query
+  reg(ctx, {
     name: 'wiki_query',
     description:
-      'Search the Obsidian vault via BM25. Standard mode returns hits with snippets, ' +
-      'inbound/outbound link graph, and verbatim hot.md + index.md. Quick mode returns ' +
-      'only the hot + index (the skill read-order).',
+      'Search the knowledge vault. Quick mode returns the hot cache and master ' +
+      'index verbatim (read those before any page). Standard mode runs BM25 full-text ' +
+      'search over every wiki page and returns ranked matches with snippets, inbound ' +
+      'links, and outbound link counts.',
     parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'search query' },
-        limit: { type: 'number', description: 'max hits (default 10)' },
-        mode: { type: 'string', enum: ['quick', 'standard'], description: 'quick returns hot+index only' },
+      query: { type: 'string', required: true, description: 'search text or topic' },
+      limit: { type: 'number', description: 'max hits (default from config)' },
+      mode: {
+        type: 'string',
+        enum: ['quick', 'standard'],
+        description: 'quick returns hot.md + index.md only; standard searches all pages',
       },
-      required: ['query'],
     },
-    handler: async ({ params }) => {
-      const p = params as { query: string; limit?: number; mode?: 'quick' | 'standard' };
-      const limit = p.limit ?? config.maxQueryResults ?? 10;
-      const mode = p.mode ?? 'standard';
-      return search(layout.wikiDir, { query: p.query, limit, mode });
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: unknown) => [
+        { type: 'text', text: renderQuery(value) },
+      ],
     },
+    execute: async (args: any) => {
+      const limit = (args.limit as number | undefined) ?? pluginConfig.maxQueryResults ?? 10;
+      const mode = (args.mode as 'quick' | 'standard' | undefined) ?? 'standard';
+      return search(layout.wikiDir, { query: args.query as string, limit, mode });
+    },
+    presentCall: (args: any) => ({
+      card: 'generic',
+      title: `Query wiki: ${args.query as string}`,
+      kind: 'read',
+      rawInput: args.query,
+    }),
   });
 
-  ctx.tools.register({
+  // wiki_write
+  reg(ctx, {
     name: 'wiki_write',
     description:
-      'Write one page to the vault with full bookkeeping: type→folder routing, ' +
-      'frontmatter completion (keeps `created` and unknown fields on update), ' +
-      'filename-uniqueness guard, master-index entry, log entry. With source_path, ' +
-      'records the source SHA-256 and skips unchanged sources unless `force`. ' +
-      'Returns unresolvedLinks (forward links during multi-page ingests are legitimate).',
+      'Write or update one wiki page with full bookkeeping: type-routed folder, ' +
+      'frontmatter completion (keeps `created` and unknown fields), filename-uniqueness ' +
+      'guard, master-index entry, and log entry. With source_path, records the source ' +
+      'SHA-256 and skips unchanged content unless `force`. Returns unresolvedLinks so ' +
+      'forward links during multi-page ingests are surfaced for the next pass.',
     parameters: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'page title (becomes the filename)' },
-        type: { type: 'string', description: 'page type: domain|area|project|resource|source|archive' },
-        content: { type: 'string', description: 'markdown body (no frontmatter; it is added automatically)' },
-        tags: { type: 'array', items: { type: 'string' }, description: 'optional tags' },
-        source_path: { type: 'string', description: 'optional path to source file; hash recorded for delta' },
-        force: { type: 'boolean', description: 'overwrite even when source hash unchanged' },
+      title: { type: 'string', required: true, description: 'page title; also filename' },
+      type: {
+        type: 'string',
+        required: true,
+        enum: ['domain', 'area', 'project', 'resource', 'source', 'archive'],
+        description: 'page type, drives folder routing',
       },
-      required: ['title', 'type', 'content'],
+      content: { type: 'string', required: true, description: 'markdown body (no frontmatter; it is added)' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'optional frontmatter tags' },
+      source_path: { type: 'string', description: 'optional path to source file; hash recorded for delta' },
+      force: { type: 'boolean', description: 'overwrite even when source hash unchanged' },
     },
-    handler: async ({ params }) => {
-      const p = params as {
-        title: string; type: string; content: string;
-        tags?: string[]; source_path?: string; force?: boolean;
-      };
-      return writePage(vaultPath, config, {
-        title: p.title,
-        type: p.type,
-        content: p.content,
-        tags: p.tags,
-        source_path: p.source_path,
-        force: p.force,
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (args: unknown, value: unknown) => [
+        { type: 'text', text: renderWrite(args, value) },
+      ],
+    },
+    execute: async (args: any) => {
+      return writePage(config.vaultPath, pluginConfig, {
+        title: args.title as string,
+        type: args.type as string,
+        content: args.content as string,
+        tags: args.tags as string[] | undefined,
+        source_path: args.source_path as string | undefined,
+        force: args.force as boolean | undefined,
       });
     },
+    presentCall: (args: any) => ({
+      card: 'generic',
+      title: `Write wiki page: ${args.title as string}`,
+      kind: 'other',
+      rawInput: { title: args.title, type: args.type },
+    }),
   });
 
-  ctx.tools.register({
-    name: 'wiki_lint',
-    description:
-      'Vault health check: duplicate filenames, dead wikilinks, orphan pages, ' +
-      'frontmatter gaps, empty sections, stale index entries, stale hot cache. ' +
-      'Returns structured report and writes a human-readable Markdown copy to ' +
-      'wiki/meta/Lint Report <date>.md.',
-    parameters: {
-      type: 'object',
-      properties: {
-        fix: { type: 'boolean', description: 'placeholder for parity with future versions; report-only in v0.1' },
-      },
-    },
-    handler: async ({ params }) => {
-      const p = params as { fix?: boolean };
-      const report = lint(vaultPath, config, { fix: p.fix });
-      const reportPath = writeLintReport(vaultPath, config, report);
-      return { ...report, reportPath };
-    },
-  });
-
-  ctx.tools.register({
-    name: 'wiki_scaffold',
-    description:
-      'Initialize a vault with the LLM Wiki layout: wiki/, .raw/, wiki/meta/, ' +
-      'and seed files (index.md, hot.md, log.md, Inbox.md). Dry-run by default; ' +
-      'pass `apply: true` to actually create files.',
-    parameters: {
-      type: 'object',
-      properties: {
-        template: { type: 'string', enum: ['default', 'minimal', 'research'], description: 'scaffold template' },
-        apply: { type: 'boolean', description: 'actually write files (default false = dry run)' },
-      },
-    },
-    handler: async ({ params }) => {
-      const p = params as { template?: 'default' | 'minimal' | 'research'; apply?: boolean };
-      return scaffold(vaultPath, config, { template: p.template, apply: p.apply });
-    },
-  });
-
-  ctx.tools.register({
+  // wiki_rename
+  reg(ctx, {
     name: 'wiki_rename',
     description:
-      'Rename a page and update its [[wikilink]] references. Refuses machinery ' +
-      'pages (lint reports) and case-only renames that would collide on ' +
-      'case-insensitive filesystems.',
+      'Rename a wiki page. Refuses machinery pages (Lint Report, index, hot, log) ' +
+      'and rejects non-portable filenames.',
     parameters: {
-      type: 'object',
-      properties: {
-        old_title: { type: 'string' },
-        new_title: { type: 'string' },
-      },
-      required: ['old_title', 'new_title'],
+      old_title: { type: 'string', required: true },
+      new_title: { type: 'string', required: true },
     },
-    handler: async ({ params }) => {
-      const p = params as { old_title: string; new_title: string };
-      return renamePage(vaultPath, p.old_title, p.new_title);
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderRename(value) }],
     },
+    execute: async (args: any) => {
+      return renamePage(
+        config.vaultPath,
+        args.old_title as string,
+        args.new_title as string,
+      );
+    },
+    presentCall: (args: any) => ({
+      card: 'generic',
+      title: `Rename wiki page: ${args.old_title as string} → ${args.new_title as string}`,
+      kind: 'other',
+      rawInput: { from: args.old_title, to: args.new_title },
+    }),
   });
 
-  ctx.tools.register({
+  // wiki_lint
+  reg(ctx, {
+    name: 'wiki_lint',
+    description:
+      'Health-check the knowledge vault: duplicate filenames, dead wikilinks, orphan ' +
+      'pages, frontmatter gaps, empty sections, stale index entries, stale hot cache. ' +
+      'Report only — every issue carries a suggestion. Writes the dated report to ' +
+      'wiki/meta/Lint Report <date>.md.',
+    parameters: {
+      fix: { type: 'boolean', description: 'placeholder for future parity; report-only in v0.1' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderLint(value) }],
+    },
+    execute: async (args: any) => {
+      const report = lint(config.vaultPath, pluginConfig, { fix: args.fix as boolean | undefined });
+      const reportPath = writeLintReport(config.vaultPath, pluginConfig, report);
+      return { ...report, reportPath };
+    },
+    presentCall: () => ({ card: 'generic', title: 'Lint wiki vault', kind: 'other' }),
+  });
+
+  // wiki_scaffold
+  reg(ctx, {
+    name: 'wiki_scaffold',
+    description:
+      'Scaffold a wiki vault: wiki/, .raw/, wiki/meta/, and seed files (index.md, ' +
+      'hot.md, log.md, Inbox.md). Dry-run by default — pass `apply: true` to write.',
+    parameters: {
+      template: {
+        type: 'string',
+        enum: ['default', 'minimal', 'research'],
+        description: 'scaffold template',
+      },
+      apply: { type: 'boolean', description: 'actually write files (default false = dry run)' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderScaffold(value) }],
+    },
+    execute: async (args: any) => {
+      return scaffold(config.vaultPath, pluginConfig, {
+        template: args.template as 'default' | 'minimal' | 'research' | undefined,
+        apply: args.apply as boolean | undefined,
+      });
+    },
+    presentCall: (args: any) => ({
+      card: 'generic',
+      title: `Scaffold wiki vault (${(args.template as string | undefined) ?? 'default'})`,
+      kind: 'other',
+      rawInput: { template: args.template, apply: args.apply },
+    }),
+  });
+
+  // wiki_list
+  reg(ctx, {
     name: 'wiki_list',
     description: 'List all page titles in the vault (excluding machinery pages).',
-    parameters: { type: 'object', properties: {} },
-    handler: async () => {
-      return { titles: [...listAllTitles(layout.wikiDir)] };
+    parameters: {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderList(value) }],
     },
+    execute: async () => ({ titles: [...listAllTitles(layout.wikiDir)] }),
+    presentCall: () => ({ card: 'generic', title: 'List wiki pages', kind: 'read' }),
   });
 
   // ── skills ───────────────────────────────────────────────────────────────
 
-  // Try both layouts: src/ (dev) and lib/ (built) so this works in either.
   const candidates = [join(__dirname, 'skills'), join(__dirname, '..', 'skills')];
   const skillsDir = candidates.find(p => existsSync(p));
   if (skillsDir) {
@@ -199,9 +296,110 @@ export function apply(ctx: Context): void {
     ctx.logger.warn(`dsh-obsidian: no skills/ directory found (looked in ${candidates.join(', ')})`);
   }
 
-  ctx.logger.info(`dsh-obsidian ready. vault=${vaultPath} wiki=${layout.wikiDir}`);
+  ctx.logger.info(`dsh-obsidian ready. vault=${config.vaultPath} wiki=${layout.wikiDir}`);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Render helpers — control what the model sees in tool output
+// ──────────────────────────────────────────────────────────────────────────────
+
+function capText(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n… (truncated at ${max} characters)`;
+}
+
+function renderQuery(value: unknown): string {
+  const v = value as
+    | { mode?: 'quick' | 'standard'; hot?: string; index?: string; results?: Array<{ name: string; path: string; score: number; inbound: string[]; outbound: string[]; snippet: string }>; totalMatches?: number; query?: string };
+  if (!v) return 'wiki_query: no result';
+
+  if (v.mode === 'quick') {
+    const parts: string[] = [];
+    if (typeof v.hot === 'string' && v.hot.length > 0) {
+      parts.push(`--- wiki/hot.md (recent context cache) ---\n${capText(v.hot, 6000)}`);
+    }
+    if (typeof v.index === 'string' && v.index.length > 0) {
+      parts.push(`--- wiki/index.md (master catalog) ---\n${capText(v.index, 8000)}`);
+    }
+    if (parts.length === 0) return 'wiki_query (quick): the vault has no hot.md or index.md yet';
+    return `wiki_query (quick): hot cache and master index follow. Read these before any page.\n\n${parts.join('\n\n')}`;
+  }
+
+  if (!Array.isArray(v.results)) return 'wiki_query: no result';
+  const lines: string[] = [
+    `wiki_query: ${v.results.length} of ${v.totalMatches ?? v.results.length} matching pages. Open a page with the fs read tool for full content.`,
+  ];
+  for (const hit of v.results) {
+    lines.push(`\n### ${hit.name}`);
+    lines.push(
+      `path: ${hit.path} · score ${hit.score} · inbound ${hit.inbound.length}${
+        hit.inbound.length > 0 ? ` (${hit.inbound.slice(0, 5).join(', ')})` : ''
+      } · outbound ${hit.outbound.length}`,
+    );
+    if (hit.snippet) lines.push(`> ${hit.snippet}`);
+  }
+  return capText(lines.join('\n'), 12000);
+}
+
+function renderWrite(args: unknown, value: unknown): string {
+  const a = args as { title?: string };
+  const v = value as
+    | { alreadyIngested?: boolean; path?: string; created?: boolean; unresolvedLinks?: string[]; skipped?: boolean };
+  if (!v) return 'wiki_write: failed';
+  if (v.alreadyIngested === true) {
+    return `wiki_write: skipped ${a.title ?? ''} — source hash unchanged (pass force: true to re-write)`;
+  }
+  if (v.path) {
+    const action = v.created ? 'created' : 'updated';
+    const tail =
+      Array.isArray(v.unresolvedLinks) && v.unresolvedLinks.length > 0
+        ? `\nwiki_write: note — ${v.unresolvedLinks.length} unresolved wikilink(s) in this page: ${v.unresolvedLinks.slice(0, 8).join(', ')}${v.unresolvedLinks.length > 8 ? ', …' : ''}. Create those pages or fix the targets.`
+        : '';
+    return `wiki_write: ${action} ${v.path}${tail}`;
+  }
+  return `wiki_write: skipped ${a.title ?? ''}`;
+}
+
+function renderRename(value: unknown): string {
+  const v = value as { from?: string; to?: string; path?: string };
+  if (!v || !v.path) return 'wiki_rename: failed';
+  return `wiki_rename: [[${v.from}]] → [[${v.to}]]`;
+}
+
+function renderLint(value: unknown): string {
+  const v = value as {
+    totals?: { error: number; warn: number; info: number };
+    issues?: Array<{ severity: string; category: string; file: string; message: string; suggestion?: string }>;
+    reportPath?: string;
+  };
+  if (!v || !v.totals) return 'wiki_lint: failed';
+  const t = v.totals;
+  const lines: string[] = [
+    `wiki_lint: ${t.error + t.warn + t.info} issues (${t.error} error, ${t.warn} warn, ${t.info} info)`,
+    `report: ${v.reportPath ?? '(not written)'}`,
+  ];
+  for (const i of (v.issues ?? []).slice(0, 60)) {
+    lines.push(`- [${i.severity}] ${i.category} · ${i.file}: ${i.message}${i.suggestion ? ' → ' + i.suggestion : ''}`);
+  }
+  if ((v.issues ?? []).length > 60) lines.push(`… and ${(v.issues ?? []).length - 60} more (see the report file)`);
+  return lines.join('\n');
+}
+
+function renderScaffold(value: unknown): string {
+  const v = value as { applied?: boolean; plan?: { create: string[]; write: { path: string }[]; skipped: string[] } };
+  if (!v || !v.plan) return 'wiki_scaffold: failed';
+  const p = v.plan;
+  if (v.applied) {
+    return `wiki_scaffold: created ${p.create.length} dirs, wrote ${p.write.length} files, skipped ${p.skipped.length} existing`;
+  }
+  return `wiki_scaffold (dry-run): would create ${p.create.length} dirs and write ${p.write.length} files. Pass apply: true to actually write.`;
+}
+
+function renderList(value: unknown): string {
+  const v = value as { titles?: string[] };
+  if (!v || !Array.isArray(v.titles)) return 'wiki_list: failed';
+  if (v.titles.length === 0) return 'wiki_list: vault is empty';
+  return `wiki_list: ${v.titles.length} pages\n\n` + v.titles.map(t => `- [[${t}]]`).join('\n');
 }
 
 // default export for tooling that expects the module form
-const _default: PluginModule = { name, inject, apply };
-export default _default;
+export default { name, inject, Config, apply };

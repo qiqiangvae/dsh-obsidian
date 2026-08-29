@@ -44,10 +44,11 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-skills": "*",
     "@deepseek-ai/schemastery": "*"
   },
   "scripts": {
-    "test": "node --test test/basic.test.mjs",
+    "test": "node --test test/basic.test.mjs test/apply.smoke.test.mjs",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build"
   },
